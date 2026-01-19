@@ -7,6 +7,7 @@ const logger = require('./utils/logger');
 const socketService = require('./services/socket.service');
 const { routes } = require('./routes/routes');
 const errorMiddleware = require('./middleware/error.middleware');
+const { apiLimiter } = require('./middleware/rateLimiter.middleware');
 
 // Initialize mock data service (replaces database)
 require('./services/mockData.service');
@@ -42,6 +43,7 @@ app.get('/', (req, res) => {
 });
   
 // API routes
+app.use('/api', apiLimiter);  // Rate limiting protection
 app.use('/api', routes);
   
 // Error handling middleware (must be last)

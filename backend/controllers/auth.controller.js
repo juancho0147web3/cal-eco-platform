@@ -3,6 +3,8 @@ const ethUtil = require('ethereumjs-util');
 const config = require('../config');
 const UserModel = require('../models/user.model');
 const { successResponse, errorResponse, validationErrorResponse } = require('../utils/response');
+const { ValidationError, UnauthorizedError, ForbiddenError } = require('../utils/errors');
+const { isValidEthereumAddress } = require('../utils/validation');
 const logger = require('../utils/logger');
 
 const LOGIN_MESSAGE = 'Login Quant Fund';
@@ -33,20 +35,21 @@ exports.loginWithSignature = async (req, res, next) => {
     const { address, signature, referral_address } = req.body;
     
     if (!address || !signature) {
-      const { response, statusCode } = validationErrorResponse('Address and signature are required');
-      return res.status(statusCode).json(response);
+      throw new ValidationError('Address and signature are required');
+    }
+    if (!isValidEthereumAddress(address)) {
+      throw new ValidationError('Invalid Ethereum address format');
     }
 
-    // Check if address is blocked
     if (config.blockedAddresses.includes(address.toLowerCase())) {
-      const { response, statusCode } = errorResponse('This address is blocked', 403);
-      return res.status(statusCode).json(response);
+      logger.warn('Blocked address attempted login', { address });
+      throw new ForbiddenError('This address is blocked from accessing the platform');
     }
 
     const isValid = await verifyWalletAddress(address, signature);
     if (!isValid) {
-      const { response, statusCode } = errorResponse('Wallet signature verification failed', 401);
-      return res.status(statusCode).json(response);
+      logger.warn('Invalid wallet signature', { address });
+      throw new UnauthorizedError('Wallet signature verification failed');
     }
 
     let users = await UserModel.getUsersDetailsAddress({ address });
@@ -54,10 +57,12 @@ exports.loginWithSignature = async (req, res, next) => {
     if (users.length === 0) {
       let referralId = null;
       if (referral_address) {
+        if (!isValidEthereumAddress(referral_address)) {
+          throw new ValidationError('Invalid referral address format');
+        }
         const refUsers = await UserModel.getUserDetailsByAddress(referral_address);
         if (refUsers.length === 0) {
-          const { response, statusCode } = validationErrorResponse('Invalid referral code');
-          return res.status(statusCode).json(response);
+          throw new ValidationError('Invalid referral code');
         }
         referralId = refUsers[0].id;
       }
@@ -68,15 +73,28 @@ exports.loginWithSignature = async (req, res, next) => {
         referral_id: referralId, 
         referral_code: referralCode 
       });
-      users = [{ id: saved.insertId, address, referral_code: referralCode, is_admin: 0 }];
+      
+      users = [{ 
+        id: saved.insertId, 
+        address, 
+        referral_code: referralCode, 
+        is_admin: 0 
+      }];
+      
+      logger.info('New user registered', { user_id: saved.insertId, address });
     }
 
     const user = users[0];
     const token = jwt.sign(
-      { id: user.id, address: user.address },
-      config.JWT_SECRET_KEY,
-      { expiresIn: config.SESSION_EXPIRES_IN }
+    { 
+      id: user.id, 
+      address: user.address,
+      role: user.is_admin ? 'cpadmin' : 'user'
+    },
+    config.JWT_SECRET_KEY,
+    { expiresIn: config.SESSION_EXPIRES_IN }
     );
+    logger.info('User logged in successfully', { user_id: user.id, address: user.address });
 
     const { response, statusCode } = successResponse({
       id: user.id,
@@ -88,7 +106,6 @@ exports.loginWithSignature = async (req, res, next) => {
 
     return res.status(statusCode).json(response);
   } catch (error) {
-    logger.error('Login error:', error);
     next(error);
   }
 };
